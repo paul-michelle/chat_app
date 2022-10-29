@@ -1,5 +1,4 @@
-#![allow(unused_variables)]
-
+use futures_util::StreamExt;
 use std::{collections::HashMap, env, net::SocketAddr, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 use warp::{ws::WebSocket, Filter};
@@ -8,7 +7,43 @@ type WsMsg = Result<warp::ws::Message, warp::Error>;
 type UsersMap = HashMap<usize, mpsc::UnboundedSender<WsMsg>>;
 type Users = Arc<RwLock<UsersMap>>;
 
-async fn connect(socker: WebSocket, users: Users) {}
+static NEXT_USERID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+async fn connect(socket: WebSocket, users: Users) {
+    let id = NEXT_USERID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    println!("Welcome User with ID {}", id);
+
+    let (user_tx, mut user_rx) = socket.split();
+    let (tx, rx) = mpsc::unbounded_channel();
+
+    let rx = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+
+    tokio::spawn(rx.forward(user_tx));
+
+    users.write().await.insert(id, tx);
+
+    while let Some(result) = user_rx.next().await {
+        broadcast_msg(result.expect("Failed to featch message"), &users).await;
+    }
+
+    disconnect(id, &users).await;
+}
+
+async fn broadcast_msg(msg: warp::ws::Message, users: &Users) {
+    if msg.to_str().is_err() {
+        return;
+    };
+
+    for (&uid, tx) in users.read().await.iter() {
+        tx.send(Ok(msg.clone()))
+            .unwrap_or_else(|_| panic!("Failed to send message {}", uid));
+    }
+}
+
+async fn disconnect(id: usize, users: &Users) {
+    println!("Good bye user with ID {}", id);
+    users.write().await.remove(&id);
+}
 
 #[tokio::main]
 async fn main() {
@@ -35,8 +70,7 @@ async fn main() {
             )
         });
 
-    let chat = warp::get()
-        .and(warp::path("chat"))
+    let chat = warp::path("chat")
         .and(warp::ws())
         .and(users)
         .map(|ws: warp::ws::Ws, users| ws.on_upgrade(move |socket| connect(socket, users)));
