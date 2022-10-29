@@ -1,0 +1,9 @@
+[package]
+name = "chat_app"
+description = "From October 2021 Rust Linz"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version= "1", features = ["full"] }
+warp = "0.3"
